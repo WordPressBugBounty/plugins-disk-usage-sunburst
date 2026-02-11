@@ -1,11 +1,11 @@
 === Disk Usage Sunburst ===
-Contributors: raidboxes, mazeheld
+Contributors: raidboxes, mazeheld, christianzimpel,
 Donate link: https://raidboxes.io
 Tags: disk usage, disk space, big files, disk consumption, file consumption, file usage, file space, sunburst, SequoiaView, DaisyDisk, WinDirStat, DiskUsage, DiskSpace, disk free, disk full, hdd space, hdd free, hdd usage, admin, WinStatDir, Sequoia, quota, hosting space, web space, disk stats, disk statistics, stats, statistics
 Requires at least: 4.0
-Tested up to: 6.1.1
-Version: 1.1.8
-Stable tag: 1.1.8
+Tested up to: 6.9
+Version: 1.1.9
+Stable tag: 1.1.9
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 

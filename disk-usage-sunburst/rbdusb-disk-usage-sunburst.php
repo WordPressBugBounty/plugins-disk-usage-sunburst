@@ -57,7 +57,7 @@ function rbdusb_init() {
     * Will only execute if the user has the capability to update the core
     * (On single sites that will be the admin in most cases, on multisites it has to be the superadmin)
     */
-    if ((current_user_can('update_core'))) {
+    if ((current_user_can('manage_options'))) {
 
         // Add the submenu to the tools page
         add_action('admin_menu', function () {
