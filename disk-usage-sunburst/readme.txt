@@ -1,27 +1,67 @@
 === Disk Usage Sunburst ===
 Contributors: raidboxes, mazeheld, christianzimpel,
 Donate link: https://raidboxes.io
-Tags: disk usage, disk space, big files, disk consumption, file consumption, file usage, file space, sunburst, SequoiaView, DaisyDisk, WinDirStat, DiskUsage, DiskSpace, disk free, disk full, hdd space, hdd free, hdd usage, admin, WinStatDir, Sequoia, quota, hosting space, web space, disk stats, disk statistics, stats, statistics
-Requires at least: 4.0
+Tags: disk usage, disk space, big files, disk consumption, file consumption, file usage, file space, sunburst, SequoiaView, DaisyDisk, WinDirStat, DiskUsage, DiskSpace, disk free, disk full, hdd space, hdd free, hdd usage, admin, WinStatDir, Sequoia, quota, hosting space, web space, disk stats, disk statistics, stats, statistics, performance, security, modern
+Requires at least: 5.0
 Tested up to: 6.9
-Version: 1.1.9
-Stable tag: 1.1.9
+Requires PHP: 7.4
+Version: 2.0.0
+Stable tag: 2.0.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
+Network: true
 
-Visualize and drill down the disk usage of your whole WordPress installation. Find and identify big files immediately!
+Modern disk usage visualization plugin with enhanced performance, security, and WordPress compatibility. Visualize and drill down your WordPress installation's disk usage instantly!
 
 == Description ==
 
-This plugin (`Tools` -> `Disk Usage`) shows all files of your WordPress installation at once. These are displayed in a so
-called "Sunburst Chart". Each arc of the chart is either a directory or a file. Move your mouse over an arc to see the size
-of the file or directory. The bigger the arc is the bigger is the file/directory.
+**Disk Usage Sunburst 2.0** is a completely modernized WordPress plugin that visualizes your site's disk usage through an interactive sunburst chart. Quickly identify large files and directories that may be consuming valuable storage space on your WordPress installation.
 
-Very useful to determine the biggest files in your WordPress installation!
+= ✨ New in Version 2.0 =
 
-Click on an arc to zoom in, and click in the circle to zoom out again.
+* **Modern Architecture**: Complete rewrite with object-oriented PHP and PSR-4 autoloading
+* **Enhanced Security**: Proper nonce validation, capability checks, and input sanitization
+* **Performance Optimized**: Timeout protection, memory management, and intelligent caching
+* **D3.js v7**: Upgraded to the latest D3.js version with smooth animations and mobile support
+* **REST API**: Full REST API endpoints for developers and external integrations
+* **Better UX**: Responsive design, progress indicators, and detailed error reporting
+* **Export Options**: Export charts as PNG, SVG, or raw JSON data
+* **WordPress 6.9+ Ready**: Tested with the latest WordPress versions
 
-Questions? Drop us a mail: wp-dev (at) [raidboxes.de](http://raidboxes.de)
+= 🎯 Key Features =
+
+* **Interactive Sunburst Chart**: Click to zoom in/out through your directory structure
+* **Real-time Tooltips**: Hover for detailed file/directory information
+* **Performance Settings**: Configurable limits for large installations
+* **Cache Management**: Smart caching with manual cache clearing options
+* **Multisite Compatible**: Works seamlessly on WordPress multisite networks
+* **Developer Friendly**: Action hooks, filters, and REST API endpoints
+* **Accessibility**: Keyboard navigation and screen reader support
+
+= 🔧 Technical Requirements =
+
+* WordPress 5.0 or higher
+* PHP 7.4 or higher
+* Modern browser with SVG support
+
+= 🎨 How to Use =
+
+1. Navigate to `Tools` -> `Disk Usage` in your WordPress admin
+2. Click "Start Scan" to analyze your installation
+3. Interact with the sunburst chart:
+   - **Click** on any arc to zoom into that directory
+   - **Click** the center circle to zoom back out
+   - **Hover** over arcs to see detailed information
+   - **Use keyboard**: ESC to zoom out, Home to return to root
+
+= 🔌 Developer Features =
+
+* REST API endpoints at `/wp-json/disk-usage/v1/`
+* Action hooks: `rbdusb_scan_completed`, `rbdusb_scan_error`
+* Filter hooks: `rbdusb_exclude_paths`, `rbdusb_scan_results`
+* WP-CLI support (coming soon)
+
+Questions? Contact us: support (at) [raidboxes.de](http://raidboxes.de)
 
 
 == Installation ==
@@ -49,6 +89,24 @@ In this case unfortunately this plugin can't calculate the sizes of all your Wor
 1. Plugin in action
 
 == Changelog ==
+
+= 2.0.0 =
+* **MAJOR UPDATE**: Complete plugin rewrite with modern architecture
+* **New**: Object-oriented PHP with PSR-4 autoloading and namespacing
+* **New**: Enhanced security with proper nonces, capability checks, and input sanitization
+* **New**: Performance optimizations - timeout protection, memory management, intelligent caching
+* **New**: Upgraded to D3.js v7 with smooth animations and mobile responsiveness
+* **New**: REST API endpoints for developers (`/wp-json/disk-usage/v1/`)
+* **New**: Export functionality (PNG, SVG, JSON)
+* **New**: Progress indicators and detailed error reporting
+* **New**: Responsive design with accessibility improvements
+* **New**: Developer hooks and filters for extensibility
+* **New**: Comprehensive test suite with PHPUnit
+* **Improved**: Better multisite compatibility with network admin integration
+* **Improved**: Modern WordPress compatibility (tested up to 6.5)
+* **Improved**: Enhanced user interface with better controls and statistics
+* **Fixed**: All security vulnerabilities and performance issues from v1.x
+* **Requires**: WordPress 5.0+, PHP 7.4+
 
 = 1.1.8 =
 * Fix: added missing readme.txt changes

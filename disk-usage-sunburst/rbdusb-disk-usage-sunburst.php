@@ -2,12 +2,18 @@
 /**
  * Plugin Name: Disk Usage Sunburst
  * Plugin URI:  https://raidboxes.io/en/disk-usage-sunburst-plugin/
- * Description: Visualizes the size of all directories and files in your WordPress installation.
+ * Description: Modern disk usage visualization plugin with enhanced performance, security, and WordPress compatibility.
  * Author:      raidboxes.io
  * Author URI:  https://raidboxes.io
- * Version:     1.1.8
- * License:     GPL2
+ * Version:     2.0.0
+ * License:     GPL-2.0-or-later
+ * License URI: http://www.gnu.org/licenses/gpl-2.0.html
  * Network:     true
+ * Requires at least: 5.0
+ * Tested up to: 6.9
+ * Requires PHP: 7.4
+ * Text Domain: disk-usage-sunburst
+ * Domain Path: /languages
  */
 
 // If this file is called directly, abort.
@@ -15,76 +21,98 @@ if ( ! defined( 'WPINC' ) ) {
     die;
 }
 
-defined('ABSPATH') or die("Unexpected error: Constant ABSPATH is not defined. This is normally the case in a WordPress environment.");
-$RBDUSB_ABSPATH = ABSPATH;
-
-/**
- * Enqueue the scripts that our plugin needs
- * @since    1.1
- */
-
-function rbdusb_scripts() {
-    $rbdusb_plugin_page  = 'tools_page_disk-usage-sunburst/rbdusb-disk-usage-sunburst';
-    $current_screen = get_current_screen();
-    if ( $rbdusb_plugin_page === $current_screen->base ) {
-        wp_enqueue_script('rbdusb_d3', plugin_dir_url(__FILE__) . 'js/d3.v3.min.js', array('jquery'), 1.1, true);   // library
-        wp_enqueue_script('rbdusb_script', plugin_dir_url(__FILE__) . 'js/rbdusb.js', array('jquery'), 1.1, true);  // our scripts
-    }
+// Security check
+if ( ! defined( 'ABSPATH' ) ) {
+    exit( 'Unexpected error: WordPress constants not defined.' );
 }
 
-/**
- * Enqueue the styles that our plugin needs
- * @since    1.1
- */
+// Plugin constants
+define( 'RBDUSB_VERSION', '2.0.0' );
+define( 'RBDUSB_PLUGIN_FILE', __FILE__ );
+define( 'RBDUSB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
+define( 'RBDUSB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
-function rbdusb_styles() {
-    $rbdusb_plugin_page = 'tools_page_disk-usage-sunburst/rbdusb-disk-usage-sunburst';
-    $current_screen = get_current_screen();
-    if ( $rbdusb_plugin_page === $current_screen->base ) {
-        wp_enqueue_style('rbdusb_css', plugin_dir_url(__FILE__) . 'css/rbdusb.css');
-    }
+// Include Composer autoloader if available
+if ( file_exists( RBDUSB_PLUGIN_DIR . 'vendor/autoload.php' ) ) {
+    require_once RBDUSB_PLUGIN_DIR . 'vendor/autoload.php';
 }
 
+// Manual autoloader for our classes
+spl_autoload_register( function( $class ) {
+    $prefix = 'RaidBoxes\\DiskUsageSunburst\\';
+    $base_dir = RBDUSB_PLUGIN_DIR . 'src/';
+
+    $len = strlen( $prefix );
+    if ( strncmp( $prefix, $class, $len ) !== 0 ) {
+        return;
+    }
+
+    $relative_class = substr( $class, $len );
+    $file = $base_dir . str_replace( '\\', '/', $relative_class ) . '.php';
+
+    if ( file_exists( $file ) ) {
+        require $file;
+    }
+});
 
 /**
- * Begins execution of the plugin.
- * @since    1.1
+ * Initialize the plugin
  */
+function rbdusb_init_plugin() {
+    $plugin = \RaidBoxes\DiskUsageSunburst\Plugin::get_instance( RBDUSB_PLUGIN_FILE );
+    $plugin->init();
+}
 
-function rbdusb_init() {
+// Hook plugin initialization
+add_action( 'plugins_loaded', 'rbdusb_init_plugin' );
 
+/**
+ * Plugin activation hook
+ */
+function rbdusb_activate_plugin() {
+    // Check requirements before activation
+    if ( version_compare( PHP_VERSION, '7.4', '<' ) ) {
+        deactivate_plugins( plugin_basename( __FILE__ ) );
+        wp_die( 
+            esc_html__( 'Disk Usage Sunburst requires PHP 7.4 or higher.', 'disk-usage-sunburst' ),
+            esc_html__( 'Plugin Activation Error', 'disk-usage-sunburst' ),
+            [ 'back_link' => true ]
+        );
+    }
+
+    global $wp_version;
+    if ( version_compare( $wp_version, '5.0', '<' ) ) {
+        deactivate_plugins( plugin_basename( __FILE__ ) );
+        wp_die(
+            esc_html__( 'Disk Usage Sunburst requires WordPress 5.0 or higher.', 'disk-usage-sunburst' ),
+            esc_html__( 'Plugin Activation Error', 'disk-usage-sunburst' ),
+            [ 'back_link' => true ]
+        );
+    }
+
+    // Initialize plugin for activation
+    rbdusb_init_plugin();
+    
+    // Run activation routine
+    $plugin = \RaidBoxes\DiskUsageSunburst\Plugin::get_instance( RBDUSB_PLUGIN_FILE );
+    $plugin->activate();
+}
+
+register_activation_hook( __FILE__, 'rbdusb_activate_plugin' );
+
+// Backward compatibility - keep old functions for existing installations
+if ( ! function_exists( 'rbdusb_humanreadablesize' ) ) {
     /**
-    * Will only execute if the user has the capability to update the core
-    * (On single sites that will be the admin in most cases, on multisites it has to be the superadmin)
-    */
-    if ((current_user_can('manage_options'))) {
-
-        // Add the submenu to the tools page
-        add_action('admin_menu', function () {
-            add_submenu_page('tools.php', 'Disk Usage', 'Disk Usage', 'administrator', __FILE__, 'rbdusb_action');
-        });
-
-        // Load the styles
-        add_action('current_screen', 'rbdusb_styles');
-
-        // Load the scripts
-        add_action('current_screen', 'rbdusb_scripts');
-
-        // Include the scan
-        add_action('wp_ajax_rbdusb_data', function () {
-            global $RBDUSB_ABSPATH;
-            include(dirname(__FILE__) . '/views/ajax.php');
-            wp_die();
-        });
-
-        // include the index view
-        function rbdusb_action() {
-            global $RBDUSB_ABSPATH;
-            include(dirname(__FILE__) . '/views/index.php');
-        }
-
+     * Legacy function for backward compatibility
+     * @param int $bytes
+     * @param int $decimals
+     * @return string
+     * @deprecated 2.0.0 Use FileScanner::format_bytes() instead
+     */
+    function rbdusb_humanreadablesize( $bytes, $decimals = 2 ) {
+        $scanner = new \RaidBoxes\DiskUsageSunburst\Scanner\FileScanner();
+        return $scanner->format_bytes( $bytes, $decimals );
     }
-
 }
 
-add_action('init','rbdusb_init');
+// Legacy AJAX handler - removed, now handled in AdminInterface

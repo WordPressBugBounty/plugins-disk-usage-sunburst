@@ -1,0 +1,34 @@
+{
+    "name": "raidboxes/disk-usage-sunburst",
+    "description": "Visualizes the size of all directories and files in your WordPress installation using a sunburst chart",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "authors": [
+        {
+            "name": "raidboxes.io",
+            "homepage": "https://raidboxes.io"
+        }
+    ],
+    "require": {
+        "php": ">=7.4"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.0",
+        "wp-coding-standards/wpcs": "^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "RaidBoxes\\DiskUsageSunburst\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "RaidBoxes\\DiskUsageSunburst\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "cs": "phpcs",
+        "cbf": "phpcbf"
+    }
+}
