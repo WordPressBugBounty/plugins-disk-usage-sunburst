@@ -26,9 +26,9 @@ class SnapshotManager {
      * Save a new snapshot
      *
      * @param array $scan_data Scan data to save.
-     * @return string|WP_Error Snapshot ID or error.
+     * @return string|\WP_Error Snapshot ID or error.
      */
-    public function save_snapshot( array $scan_data ): string|\WP_Error {
+    public function save_snapshot( array $scan_data ) {
         try {
             $snapshot_id = $this->generate_snapshot_id();
             
@@ -83,7 +83,7 @@ class SnapshotManager {
      * @param string $snapshot_id Snapshot ID.
      * @return array|null Snapshot data or null if not found.
      */
-    public function get_snapshot( string $snapshot_id ): ?array {
+    public function get_snapshot( string $snapshot_id ) {
         $snapshots = $this->get_snapshots();
         return $snapshots[$snapshot_id] ?? null;
     }
@@ -242,7 +242,7 @@ class SnapshotManager {
      * @param array $snapshots Snapshots array.
      * @return string|null Oldest snapshot date.
      */
-    private function get_oldest_snapshot_date( array $snapshots ): ?string {
+    private function get_oldest_snapshot_date( array $snapshots ) {
         if ( empty( $snapshots ) ) {
             return null;
         }
@@ -257,7 +257,7 @@ class SnapshotManager {
      * @param array $snapshots Snapshots array.
      * @return string|null Newest snapshot date.
      */
-    private function get_newest_snapshot_date( array $snapshots ): ?string {
+    private function get_newest_snapshot_date( array $snapshots ) {
         if ( empty( $snapshots ) ) {
             return null;
         }
