@@ -16,10 +16,10 @@ class FileScanner {
      * Default configuration
      */
     private const DEFAULT_CONFIG = [
-        'max_execution_time' => 120,
+        'max_execution_time' => 300,
         'memory_limit' => '256M',
         'max_depth' => 50,
-        'max_files' => 10000,
+        'max_files' => 100000,
         'chunk_size' => 100,
         'cache_duration' => 3600, // 1 hour
     ];

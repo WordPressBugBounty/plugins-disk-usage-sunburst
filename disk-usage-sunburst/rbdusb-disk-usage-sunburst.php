@@ -5,7 +5,7 @@
  * Description: Modern disk usage visualization plugin with enhanced performance, security, and WordPress compatibility.
  * Author:      raidboxes.io
  * Author URI:  https://raidboxes.io
- * Version:     2.0.1
+ * Version:     2.0.2
  * License:     GPL-2.0-or-later
  * License URI: http://www.gnu.org/licenses/gpl-2.0.html
  * Network:     true

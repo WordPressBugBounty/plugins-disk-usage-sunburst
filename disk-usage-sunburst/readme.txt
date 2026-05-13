@@ -6,7 +6,7 @@ Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
 Version: 2.0.0
-Stable tag: 2.0.1
+Stable tag: 2.0.2
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 Network: true
@@ -89,6 +89,8 @@ In this case unfortunately this plugin can't calculate the sizes of all your Wor
 1. Plugin in action
 
 == Changelog ==
+
+* 2.0.2: Increased scan limits for large websites.
 
 = 2.0.0 =
 * **MAJOR UPDATE**: Complete plugin rewrite with modern architecture
