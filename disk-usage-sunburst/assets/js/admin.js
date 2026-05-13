@@ -473,25 +473,16 @@
                 .classed('visible', false);
         }
 
-        /**
-         * Get tooltip content
-         */
-        getTooltipContent(d) {
-            const data = d.data;
-            let content = `<strong>${data.name}</strong><br>`;
-            content += `Size: ${data.human_size || this.formatBytes(data.size)}<br>`;
-            content += `Type: ${data.type}`;
-            
-            if (data.extension) {
-                content += `<br>Extension: .${data.extension}`;
-            }
-            
-            if (data.children) {
-                content += `<br>Items: ${data.children.length}`;
-            }
-            
-            return content;
-        }
+        showTooltip(event, d) {
+    const content = this.getTooltipContent(d);
+
+    this.tooltip
+        .html(content)
+        .style('opacity', 1)
+        .classed('visible', true);
+
+    this.moveTooltip(event, d);
+}
 
         /**
          * Format bytes to human readable
