@@ -429,17 +429,28 @@
         }
 
         /**
-         * Show tooltip
+         * Get tooltip content
          */
-        showTooltip(event, d) {
-            const content = this.getTooltipContent(d);
+        getTooltipContent(d) {
+            const data = d.data;
             
-            this.tooltip
-                .html(content)
-                .style('opacity', 1)
-                .classed('visible', true);
-                
-            this.moveTooltip(event, d);
+            // FIX: Namen escapen, um XSS zu verhindern
+            const safeName = this.escapeHtml(data.name);
+            const safeExt = data.extension ? this.escapeHtml(data.extension) : '';
+
+            let content = `<strong>${safeName}</strong><br>`;
+            content += `Size: ${data.human_size || this.formatBytes(data.size)}<br>`;
+            content += `Type: ${data.type}`;
+            
+            if (data.extension) {
+                content += `<br>Extension: .${safeExt}`;
+            }
+            
+            if (data.children) {
+                content += `<br>Items: ${data.children.length}`;
+            }
+            
+            return content;
         }
 
         /**
