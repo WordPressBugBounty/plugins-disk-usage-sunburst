@@ -3,10 +3,10 @@ Contributors: raidboxes, mazeheld, christianzimpel,
 Donate link: https://raidboxes.io
 Tags: disk usage, disk space, big files, disk consumption, file consumption, file usage, file space, sunburst, SequoiaView, DaisyDisk, WinDirStat, DiskUsage, DiskSpace, disk free, disk full, hdd space, hdd free, hdd usage, admin, WinStatDir, Sequoia, quota, hosting space, web space, disk stats, disk statistics, stats, statistics, performance, security, modern
 Requires at least: 5.0
-Tested up to: 6.9
+Tested up to: 7.0.3
 Requires PHP: 7.4
-Version: 2.0.4
-Stable tag: 2.0.4
+Version: 2.0.6
+Stable tag: 2.0.6
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 Network: true
@@ -89,6 +89,10 @@ In this case unfortunately this plugin can't calculate the sizes of all your Wor
 1. Plugin in action
 
 == Changelog ==
+
+* 2.0.6: Fix missing ScanJobManager class and cleanup legacy files.
+
+* 2.0.5: Performance Improvements.
 
 * 2.0.4: Tooltip fix
 * 2.0.3: Security Fix: Sanitize file names in tooltips to prevent Stored XSS.

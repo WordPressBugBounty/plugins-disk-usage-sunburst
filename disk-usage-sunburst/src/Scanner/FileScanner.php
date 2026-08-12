@@ -58,7 +58,8 @@ class FileScanner {
      * @param array $config Optional configuration override.
      */
     public function __construct( array $config = [] ) {
-        $this->config = wp_parse_args( $config, self::DEFAULT_CONFIG );
+        $this->config = self::DEFAULT_CONFIG;
+        $this->update_config( $config );
         $this->stats = [
             'files_scanned' => 0,
             'directories_scanned' => 0,
@@ -169,7 +170,7 @@ class FileScanner {
             $filesize = $this->get_safe_filesize( $path );
             $result['size'] = $filesize;
             $result['extension'] = pathinfo( $path, PATHINFO_EXTENSION );
-            $result['mime_type'] = $this->get_mime_type( $path );
+            $result['mime_type'] = ''; // MIME detection is intentionally skipped for performance.
             
             $this->stats['files_scanned']++;
             $this->stats['total_size'] += $filesize;
@@ -190,9 +191,19 @@ class FileScanner {
                 $files = $this->scan_directory( $path );
                 
                 foreach ( $files as $file ) {
-                    $file_path = $path . DIRECTORY_SEPARATOR . $file;
-                    
                     if ( $file === '.' || $file === '..' ) {
+                        continue;
+                    }
+
+                    $file_path = $path . DIRECTORY_SEPARATOR . $file;
+
+                    // Do not follow symlinks. They can point outside of ABSPATH and create loops.
+                    if ( is_link( $file_path ) ) {
+                        continue;
+                    }
+
+                    // Re-validate every child path so recursion cannot escape ABSPATH.
+                    if ( ! $this->is_valid_path( $file_path ) ) {
                         continue;
                     }
 
@@ -202,9 +213,8 @@ class FileScanner {
                 }
 
             } catch ( \Exception $e ) {
-                // Log the error but continue scanning
                 error_log( sprintf( 'Disk Usage Sunburst: Error scanning directory %s: %s', $path, $e->getMessage() ) );
-                $result['error'] = $e->getMessage();
+                throw $e;
             }
 
             if ( ! empty( $children ) ) {
@@ -430,6 +440,16 @@ class FileScanner {
                 "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
                 '_transient_timeout_rbdusb_scan_%'
             ));
+
+            $wpdb->query( $wpdb->prepare( 
+                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
+                '_transient_rbdusb_chunked_scan_%'
+            ));
+
+            $wpdb->query( $wpdb->prepare( 
+                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
+                '_transient_timeout_rbdusb_chunked_scan_%'
+            ));
             
             return true;
         }
@@ -452,6 +472,47 @@ class FileScanner {
      * @param array $config New configuration.
      */
     public function update_config( array $config ): void {
-        $this->config = wp_parse_args( $config, $this->config );
+        $sanitized = [];
+        $integer_limits = [
+            'max_execution_time' => [ 30, 600 ],
+            'max_depth'          => [ 5, 100 ],
+            'max_files'          => [ 100, 50000 ],
+            'chunk_size'         => [ 10, 1000 ],
+            'cache_duration'     => [ 300, 86400 ],
+        ];
+
+        foreach ( $integer_limits as $key => $limits ) {
+            if ( array_key_exists( $key, $config ) ) {
+                $value = absint( $config[ $key ] );
+                $sanitized[ $key ] = max( $limits[0], min( $value, $limits[1] ) );
+            }
+        }
+
+        if ( array_key_exists( 'memory_limit', $config ) ) {
+            $sanitized['memory_limit'] = $this->sanitize_memory_limit( (string) $config['memory_limit'] );
+        }
+
+        $this->config = wp_parse_args( $sanitized, $this->config );
+    }
+
+    /**
+     * Sanitize the memory limit used during scans.
+     *
+     * @param string $memory_limit Requested memory limit.
+     * @return string Safe memory limit.
+     */
+    private function sanitize_memory_limit( string $memory_limit ): string {
+        $memory_limit = strtoupper( trim( $memory_limit ) );
+
+        if ( ! preg_match( '/^(\d+)([MG])$/', $memory_limit, $matches ) ) {
+            return self::DEFAULT_CONFIG['memory_limit'];
+        }
+
+        $value = absint( $matches[1] );
+        $unit = $matches[2];
+        $value_in_mb = 'G' === $unit ? $value * 1024 : $value;
+        $value_in_mb = max( 128, min( $value_in_mb, 512 ) );
+
+        return $value_in_mb . 'M';
     }
 }

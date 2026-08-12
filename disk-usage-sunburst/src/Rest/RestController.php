@@ -143,12 +143,7 @@ class RestController {
             ],
         ] );
         
-        // DEBUG: Add temporary capability check endpoint
-        register_rest_route( self::NAMESPACE, '/debug/capabilities', [
-            'methods' => 'GET',
-            'callback' => [ $this, 'debug_capabilities' ],
-            'permission_callback' => '__return_true', // Allow anyone to check (temporary)
-        ] );
+        
     }
 
     /**
@@ -195,7 +190,7 @@ class RestController {
         if ( 'POST' === $request->get_method() ) {
             $options = $request->get_param( 'options' );
             if ( is_array( $options ) && ! empty( $options ) ) {
-                $this->scanner->update_config( $options );
+                $this->scanner->update_config( $this->sanitize_config( $options ) );
             }
         } else {
             // For GET requests, use query parameters for configuration
@@ -207,7 +202,7 @@ class RestController {
                 $config['max_files'] = $request->get_param( 'max_files' );
             }
             if ( ! empty( $config ) ) {
-                $this->scanner->update_config( $config );
+                $this->scanner->update_config( $this->sanitize_config( $config ) );
             }
         }
 
@@ -259,7 +254,7 @@ class RestController {
         // Limit system information exposure for security
         $system_info = [
             'is_multisite' => is_multisite(),
-            'plugin_version' => '2.0.0', // Safe to expose plugin version
+            'plugin_version' => defined( 'RBDUSB_VERSION' ) ? RBDUSB_VERSION : '0.0.0', // Safe to expose plugin version
             // Removed sensitive system details like PHP version, memory limits, etc.
         ];
 
@@ -338,61 +333,54 @@ class RestController {
      */
     private function sanitize_config( array $config ): array {
         $sanitized = [];
-        $validation_rules = [
-            'max_execution_time' => [
-                'type' => 'int',
-                'min' => 30,
-                'max' => 600,
-                'default' => 120
-            ],
-            'max_files' => [
-                'type' => 'int', 
-                'min' => 100,
-                'max' => 50000,
-                'default' => 10000
-            ],
-            'cache_duration' => [
-                'type' => 'int',
-                'min' => 300,
-                'max' => 86400,
-                'default' => 3600
-            ],
-            'max_depth' => [
-                'type' => 'int',
-                'min' => 5,
-                'max' => 100,
-                'default' => 50
-            ],
-            'memory_limit' => [
-                'type' => 'string',
-                'pattern' => '/^\d+[MG]?$/',
-                'default' => '256M'
-            ]
+        $integer_limits = [
+            'max_execution_time' => [ 'min' => 30, 'max' => 600, 'default' => 120 ],
+            'max_files'          => [ 'min' => 100, 'max' => 50000, 'default' => 10000 ],
+            'cache_duration'     => [ 'min' => 300, 'max' => 86400, 'default' => 3600 ],
+            'max_depth'          => [ 'min' => 5, 'max' => 100, 'default' => 50 ],
         ];
 
-        foreach ( $validation_rules as $key => $rules ) {
-            if ( isset( $config[ $key ] ) ) {
-                $value = $config[ $key ];
-                
-                if ( $rules['type'] === 'int' ) {
-                    $value = absint( $value );
-                    // Apply bounds checking
-                    if ( $value < $rules['min'] || $value > $rules['max'] ) {
-                        $value = $rules['default'];
-                    }
-                    $sanitized[ $key ] = $value;
-                } elseif ( $rules['type'] === 'string' ) {
-                    $value = sanitize_text_field( $value );
-                    // Validate against pattern if provided
-                    if ( isset( $rules['pattern'] ) && ! preg_match( $rules['pattern'], $value ) ) {
-                        $value = $rules['default'];
-                    }
-                    $sanitized[ $key ] = $value;
+        foreach ( $integer_limits as $key => $rules ) {
+            if ( array_key_exists( $key, $config ) ) {
+                $value = absint( $config[ $key ] );
+
+                if ( 0 === $value && 0 !== (int) $rules['min'] ) {
+                    $value = (int) $rules['default'];
                 }
+
+                $sanitized[ $key ] = max(
+                    (int) $rules['min'],
+                    min( $value, (int) $rules['max'] )
+                );
             }
         }
 
+        if ( array_key_exists( 'memory_limit', $config ) ) {
+            $sanitized['memory_limit'] = $this->sanitize_memory_limit( (string) $config['memory_limit'] );
+        }
+
         return $sanitized;
+    }
+
+    /**
+     * Sanitize and cap the memory limit accepted via REST.
+     *
+     * @param string $memory_limit Raw memory limit.
+     * @return string Safe memory limit.
+     */
+    private function sanitize_memory_limit( string $memory_limit ): string {
+        $memory_limit = strtoupper( trim( sanitize_text_field( $memory_limit ) ) );
+
+        if ( ! preg_match( '/^(\d+)([MG])$/', $memory_limit, $matches ) ) {
+            return '256M';
+        }
+
+        $value = absint( $matches[1] );
+        $unit = $matches[2];
+        $value_in_mb = 'G' === $unit ? $value * 1024 : $value;
+        $value_in_mb = max( 128, min( $value_in_mb, 512 ) );
+
+        return $value_in_mb . 'M';
     }
 
     /**
@@ -402,27 +390,5 @@ class RestController {
      */
     public function get_namespace(): string {
         return self::NAMESPACE;
-    }
-
-    /**
-     * DEBUG: Handle capability check request
-     *
-     * @param \WP_REST_Request $request Request object.
-     * @return \WP_REST_Response Response object.
-     */
-    public function debug_capabilities( \WP_REST_Request $request ): \WP_REST_Response {
-        $capabilities = [
-            'manage_network' => current_user_can( 'manage_network' ),
-            'update_core' => current_user_can( 'update_core' ),
-            'manage_options' => current_user_can( 'manage_options' ),
-            'is_admin' => current_user_can( 'administrator' ),
-            'user_login' => wp_get_current_user()->user_login,
-            'user_roles' => wp_get_current_user()->roles,
-        ];
-
-        return new \WP_REST_Response( [
-            'success' => true,
-            'capabilities' => $capabilities,
-        ], 200 );
     }
 }

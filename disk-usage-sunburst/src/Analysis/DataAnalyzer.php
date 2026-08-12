@@ -19,6 +19,10 @@ class DataAnalyzer {
      * @return array Analysis results.
      */
     public function analyze( array $scan_data ): array {
+        if ( ! empty( $scan_data['metadata']['analysis'] ) && is_array( $scan_data['metadata']['analysis'] ) ) {
+            return $scan_data['metadata']['analysis'];
+        }
+
         return [
             'largest_files' => $this->get_largest_files( $scan_data ),
             'largest_folders' => $this->get_largest_folders( $scan_data ),
@@ -51,7 +55,7 @@ class DataAnalyzer {
         });
 
         // Calculate total size for percentages
-        $total_size = $scan_data['size'] ?? 1;
+        $total_size = max( 1, (int) ( $scan_data['size'] ?? 0 ) );
 
         return array_slice( array_map( function( $file ) use ( $total_size ) {
             return [
@@ -87,7 +91,7 @@ class DataAnalyzer {
         });
 
         // Calculate total size for percentages
-        $total_size = $scan_data['size'] ?? 1;
+        $total_size = max( 1, (int) ( $scan_data['size'] ?? 0 ) );
 
         return array_slice( array_map( function( $folder ) use ( $total_size ) {
             return [
@@ -119,7 +123,7 @@ class DataAnalyzer {
         // Sort by size (descending)
         arsort( $types );
 
-        $total_size = $scan_data['size'] ?? 1;
+        $total_size = max( 1, (int) ( $scan_data['size'] ?? 0 ) );
 
         $breakdown = [];
         foreach ( $types as $extension => $size ) {
@@ -155,7 +159,7 @@ class DataAnalyzer {
 
         $this->categorize_wordpress_files( $scan_data, $categories );
 
-        $total_size = $scan_data['size'] ?? 1;
+        $total_size = max( 1, (int) ( $scan_data['size'] ?? 0 ) );
 
         $breakdown = [];
         foreach ( $categories as $category => $size ) {
@@ -540,7 +544,7 @@ class DataAnalyzer {
         });
 
         // Calculate total size for percentages
-        $total_size = $scan_data['size'] ?? 1;
+        $total_size = max( 1, (int) ( $scan_data['size'] ?? 0 ) );
 
         return array_slice( array_map( function( $folder ) use ( $total_size ) {
             return [

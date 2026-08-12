@@ -2,7 +2,7 @@
 
 ## Overview
 
-Disk Usage Sunburst 2.0 is a modern WordPress plugin built with object-oriented PHP, following WordPress coding standards and best practices. This document provides comprehensive information for developers who want to extend, customize, or integrate with the plugin.
+Disk Usage Sunburst is a modern WordPress plugin built with object-oriented PHP, following WordPress coding standards and best practices. This document provides comprehensive information for developers who want to extend, customize, or integrate with the plugin.
 
 ## Architecture
 

@@ -136,7 +136,6 @@
          * Start scanning process
          */
         async startScan() {
-            const path = rbdusbAjax.abspath; // Always use WordPress root directory
             const useCache = $('#rbdusb-use-cache').is(':checked');
             
             try {
@@ -144,9 +143,9 @@
                 this.hideInstructions();
                 this.clearMessages();
                 
-                console.log('Starting scan for path:', path);
+                this.debugLog('Starting chunked scan');
                 
-                const response = await this.performScan(path, useCache);
+                const response = await this.performScan(useCache);
                 
                 console.log('Scan response received:', response);
                 
@@ -198,65 +197,144 @@
         }
 
         /**
-         * Perform the actual scan via AJAX
+         * Perform the scan via a resumable chunked AJAX job.
          */
-        async performScan(path, useCache) {
-            return new Promise((resolve, reject) => {
-                if (rbdusbAjax.debug) {
-                    console.log('Starting AJAX request with data:', {
-                        action: 'rbdusb_data',
-                        path: path,
-                        use_cache: useCache
-                    });
+        async performScan(useCache) {
+            const startResponse = await this.ajaxPost({
+                action: 'rbdusb_scan_start',
+                nonce: rbdusbAjax.nonce,
+                use_cache: useCache ? '1' : '0'
+            });
+
+            if (!startResponse.success) {
+                throw new Error(this.getAjaxErrorMessage(startResponse));
+            }
+
+            const startData = startResponse.data || {};
+
+            if (startData.completed && startData.data) {
+                this.updateScanProgress(startData.progress || { percent: 100, message: 'Loaded cached result.' });
+                return { success: true, data: startData.data };
+            }
+
+            const jobId = startData.job_id;
+            if (!jobId) {
+                throw new Error('Scan job could not be started.');
+            }
+
+            this.updateScanProgress(startData.progress || { percent: 0, message: rbdusbAjax.strings.scan_starting || 'Starting scan job...' });
+
+            while (true) {
+                const stepResponse = await this.ajaxPost({
+                    action: 'rbdusb_scan_step',
+                    nonce: rbdusbAjax.nonce,
+                    job_id: jobId,
+                    save_snapshot: '1'
+                });
+
+                if (!stepResponse.success) {
+                    throw new Error(this.getAjaxErrorMessage(stepResponse));
                 }
 
+                const stepData = stepResponse.data || {};
+                this.updateScanProgress(stepData.progress || {});
+
+                if (stepData.completed && stepData.data) {
+                    return { success: true, data: stepData.data };
+                }
+
+                await this.delay(250);
+            }
+        }
+
+        /**
+         * AJAX helper returning parsed JSON from WordPress admin-ajax.php.
+         */
+        ajaxPost(data) {
+            return new Promise((resolve, reject) => {
                 $.ajax({
                     url: rbdusbAjax.ajaxurl,
                     type: 'POST',
-                    data: {
-                        action: 'rbdusb_data',
-                        nonce: rbdusbAjax.nonce,
-                        path: path,
-                        use_cache: useCache
-                    },
-                    timeout: 120000, // 2 minute timeout
-                    dataType: 'text', // Get as text first to handle both formats
+                    data: data,
+                    timeout: 60000,
+                    dataType: 'json'
                 })
-                .done((response, textStatus, xhr) => {
-                    if (rbdusbAjax.debug) {
-                        console.log('AJAX Response received:', response);
-                        console.log('Response type:', typeof response);
-                        console.log('Status:', textStatus);
-                    }
-
-                    // Handle both old and new response formats
-                    let parsedResponse;
-                    try {
-                        parsedResponse = JSON.parse(response);
-                    } catch (e) {
-                        console.error('JSON Parse Error:', e);
-                        reject(new Error('Invalid JSON response: ' + response.substring(0, 100)));
-                        return;
-                    }
-
-                    resolve(parsedResponse);
-                })
+                .done((response) => resolve(response))
                 .fail((xhr, status, error) => {
-                    console.error('AJAX Error Details:', {
-                        status: status,
-                        error: error,
-                        responseText: xhr.responseText,
-                        statusCode: xhr.status
-                    });
-                    
-                    let errorMessage = `Request failed: ${status}`;
-                    if (xhr.responseText) {
-                        errorMessage += ` - ${xhr.responseText}`;
+                    let message = `Request failed: ${status}`;
+
+                    if (xhr.responseJSON) {
+                        message = this.getAjaxErrorMessage(xhr.responseJSON);
+                    } else if (xhr.responseText) {
+                        message += ` - ${xhr.responseText.substring(0, 300)}`;
+                    } else if (error) {
+                        message += ` - ${error}`;
                     }
-                    
-                    reject(new Error(errorMessage));
+
+                    reject(new Error(message));
                 });
             });
+        }
+
+        /**
+         * Extract a readable AJAX error message.
+         */
+        getAjaxErrorMessage(response) {
+            if (response && response.data && response.data.message) {
+                return response.data.message;
+            }
+
+            if (response && response.message) {
+                return response.message;
+            }
+
+            return rbdusbAjax.strings.error || 'An error occurred during scanning.';
+        }
+
+        /**
+         * Small delay between scan chunks so the browser stays responsive.
+         */
+        delay(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        /**
+         * Update progress UI from chunked scan progress data.
+         */
+        updateScanProgress(progress) {
+            const percent = typeof progress.percent === 'number' ? Math.max(0, Math.min(100, progress.percent)) : null;
+            const files = progress.files_scanned ? Number(progress.files_scanned).toLocaleString() : '0';
+            const dirs = progress.directories_scanned ? Number(progress.directories_scanned).toLocaleString() : '0';
+            const size = progress.total_size_human || this.formatBytes(progress.total_size || 0);
+            const queue = progress.queue_remaining !== undefined ? Number(progress.queue_remaining).toLocaleString() : '0';
+            const message = progress.message || rbdusbAjax.strings.scan_progress || 'Scanning in small steps...';
+
+            let text = `${message} Files: ${files}, folders: ${dirs}, current size: ${size}, queue: ${queue}`;
+            if (percent !== null) {
+                text = `${Math.round(percent)}% — ${text}`;
+            }
+
+            $('.rbdusb-progress-text').text(text);
+
+            const $fill = $('.rbdusb-progress-fill');
+            const $bar = $('.rbdusb-progress-bar');
+
+            if (percent !== null) {
+                $bar.removeClass('indeterminate');
+                $fill.css('width', `${percent}%`);
+            } else {
+                $bar.addClass('indeterminate');
+                $fill.css('width', '100%');
+            }
+        }
+
+        /**
+         * Debug logger that only writes when WP_DEBUG enabled localized debug mode.
+         */
+        debugLog(...args) {
+            if (rbdusbAjax.debug) {
+                console.log(...args);
+            }
         }
 
         /**
@@ -574,16 +652,22 @@
         }
 
         showMessage(message, type = 'info') {
-            const messageDiv = $(`
-                <div class="notice notice-${type} is-dismissible">
-                    <p>${message}</p>
-                    <button type="button" class="notice-dismiss">
-                        <span class="screen-reader-text">Dismiss this notice.</span>
-                    </button>
-                </div>
-            `);
+            const allowedTypes = ['info', 'success', 'warning', 'error'];
+            const noticeType = allowedTypes.includes(type) ? type : 'info';
+            const safeMessage = message === undefined || message === null ? '' : String(message);
 
-            $('#rbdusb-messages').html(messageDiv);
+            const messageDiv = $('<div>')
+                .addClass(`notice notice-${noticeType} is-dismissible`);
+
+            $('<p>').text(safeMessage).appendTo(messageDiv);
+
+            $('<button>')
+                .attr('type', 'button')
+                .addClass('notice-dismiss')
+                .append($('<span>').addClass('screen-reader-text').text('Dismiss this notice.'))
+                .appendTo(messageDiv);
+
+            $('#rbdusb-messages').empty().append(messageDiv);
             
             // Auto-dismiss after 5 seconds
             setTimeout(() => {
@@ -951,7 +1035,13 @@
          */
         async preloadAnalysis() {
             if (!this.currentSnapshotId && !this.data) {
-                console.log('No snapshot ID or data for preload analysis');
+                this.debugLog('No snapshot ID or data for preload analysis');
+                return;
+            }
+
+            if (this.data && this.data.metadata && this.data.metadata.analysis) {
+                this.analysisData = this.data.metadata.analysis;
+                $('#rbdusb-show-analysis').text('Detailed Analysis ✓');
                 return;
             }
 
@@ -961,7 +1051,7 @@
                 
                 // Use setTimeout to make it truly asynchronous and non-blocking
                 setTimeout(async () => {
-                    console.log('Preloading analysis in background...', {
+                    this.debugLog('Preloading analysis in background...', {
                         snapshotId: this.currentSnapshotId,
                         hasData: !!this.data
                     });
@@ -979,11 +1069,11 @@
                     
                     const response = await $.post(rbdusbAjax.ajaxurl, requestData);
 
-                    console.log('Analysis response:', response);
+                    this.debugLog('Analysis response:', response);
 
                     if (response.success) {
                         this.analysisData = response.data;
-                        console.log('Analysis preloaded successfully', this.analysisData);
+                        this.debugLog('Analysis preloaded successfully', this.analysisData);
                         
                         // Update button to show analysis is ready
                         $('#rbdusb-show-analysis').text('Detailed Analysis ✓');
@@ -992,7 +1082,7 @@
                         // Fallback to local analysis only if backend fails
                         if (this.data) {
                             this.analysisData = this.analyzeDataLocally(this.data);
-                            console.log('Fallback local analysis completed', this.analysisData);
+                            this.debugLog('Fallback local analysis completed', this.analysisData);
                             $('#rbdusb-show-analysis').text('Detailed Analysis ✓');
                         }
                     }
@@ -1013,6 +1103,12 @@
          */
         async loadAnalysis() {
             if (this.analysisData) {
+                this.renderAnalysis(this.analysisData);
+                return;
+            }
+
+            if (this.data && this.data.metadata && this.data.metadata.analysis) {
+                this.analysisData = this.data.metadata.analysis;
                 this.renderAnalysis(this.analysisData);
                 return;
             }
@@ -1042,7 +1138,7 @@
                     
                     // Fallback to local analysis only if backend fails
                     if (this.data) {
-                        console.log('Falling back to local analysis...');
+                        this.debugLog('Falling back to local analysis...');
                         this.analysisData = this.analyzeDataLocally(this.data);
                         this.renderAnalysis(this.analysisData);
                     }
@@ -1060,17 +1156,17 @@
          * Render analysis tables
          */
         renderAnalysis(analysis) {
-            console.log('Rendering analysis with', analysis);
+            this.debugLog('Rendering analysis with', analysis);
             
             // Debug: Check if the new sections have data
-            console.log('Analysis data keys:', Object.keys(analysis));
-            console.log('WordPress breakdown:', analysis.wordpress_breakdown?.length || 0);
-            console.log('Largest files:', analysis.largest_files?.length || 0);
-            console.log('Largest folders:', analysis.largest_folders?.length || 0);
-            console.log('Folders most files:', analysis.folders_most_files?.length || 0);
-            console.log('Largest plugin folders:', analysis.largest_plugin_folders?.length || 0);
-            console.log('Largest theme folders:', analysis.largest_theme_folders?.length || 0);
-            console.log('Uploads summary:', analysis.uploads_summary?.length || 0);
+            this.debugLog('Analysis data keys:', Object.keys(analysis));
+            this.debugLog('WordPress breakdown:', analysis.wordpress_breakdown?.length || 0);
+            this.debugLog('Largest files:', analysis.largest_files?.length || 0);
+            this.debugLog('Largest folders:', analysis.largest_folders?.length || 0);
+            this.debugLog('Folders most files:', analysis.folders_most_files?.length || 0);
+            this.debugLog('Largest plugin folders:', analysis.largest_plugin_folders?.length || 0);
+            this.debugLog('Largest theme folders:', analysis.largest_theme_folders?.length || 0);
+            this.debugLog('Uploads summary:', analysis.uploads_summary?.length || 0);
 
             // Render WordPress breakdown
             this.renderWordPressBreakdown(analysis.wordpress_breakdown || []);

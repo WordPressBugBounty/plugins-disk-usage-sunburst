@@ -5,12 +5,12 @@
  * Description: Modern disk usage visualization plugin with enhanced performance, security, and WordPress compatibility.
  * Author:      raidboxes.io
  * Author URI:  https://raidboxes.io
- * Version:     2.0.4
+ * Version:     2.0.6
  * License:     GPL-2.0-or-later
  * License URI: http://www.gnu.org/licenses/gpl-2.0.html
  * Network:     true
  * Requires at least: 5.0
- * Tested up to: 6.9
+ * Tested up to: 7.0.3
  * Requires PHP: 7.4
  * Text Domain: disk-usage-sunburst
  * Domain Path: /languages
@@ -27,7 +27,34 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Plugin constants
-define( 'RBDUSB_VERSION', '2.0.0' );
+/**
+ * Get plugin version from plugin header.
+ *
+ * @return string
+ */
+function rbdusb_get_plugin_version(): string {
+    static $version = null;
+
+    if ( null !== $version ) {
+        return $version;
+    }
+
+    $plugin_data = get_file_data(
+        __FILE__,
+        [
+            'Version' => 'Version',
+        ],
+        'plugin'
+    );
+
+    $version = ! empty( $plugin_data['Version'] )
+        ? $plugin_data['Version']
+        : '0.0.0';
+
+    return $version;
+}
+
+define( 'RBDUSB_VERSION', rbdusb_get_plugin_version() );
 define( 'RBDUSB_PLUGIN_FILE', __FILE__ );
 define( 'RBDUSB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'RBDUSB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
