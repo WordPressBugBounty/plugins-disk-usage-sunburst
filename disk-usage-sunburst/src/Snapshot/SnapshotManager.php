@@ -7,6 +7,8 @@
 
 namespace RaidBoxes\DiskUsageSunburst\Snapshot;
 
+use RaidBoxes\DiskUsageSunburst\Storage\PrivateStorage;
+
 /**
  * Handles snapshot creation, storage, and management
  */
@@ -103,8 +105,9 @@ class SnapshotManager {
             return null;
         }
 
+        $this->ensure_storage_directory();
         $file = $this->get_snapshot_file_path( $snapshot_id );
-        if ( ! is_readable( $file ) ) {
+        if ( '' === $file || is_link( $file ) || ! is_readable( $file ) ) {
             return null;
         }
 
@@ -123,8 +126,9 @@ class SnapshotManager {
             return false;
         }
 
+        $this->ensure_storage_directory();
         $file = $this->get_snapshot_file_path( $snapshot_id );
-        if ( ! is_file( $file ) ) {
+        if ( '' === $file || is_link( $file ) || ! is_file( $file ) ) {
             return false;
         }
 
@@ -336,52 +340,55 @@ class SnapshotManager {
      * @return string Absolute directory path.
      */
     private function get_storage_dir(): string {
-        $upload_dir = wp_upload_dir( null, false );
-
-        if ( empty( $upload_dir['error'] ) && ! empty( $upload_dir['basedir'] ) ) {
-            $base_dir = $upload_dir['basedir'];
-        } else {
-            $base_dir = defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR : dirname( ABSPATH ) . DIRECTORY_SEPARATOR . 'wp-content';
-        }
-
-        return trailingslashit( $base_dir ) . self::SNAPSHOT_DIR;
+        return PrivateStorage::directory( 'snapshots' );
     }
 
-    /**
-     * Create snapshot storage directory and basic web-access protection files.
-     *
-     * @return bool Whether the directory is writable.
-     */
+    /** Private storage is mandatory; a .htaccess alone cannot secure Nginx. */
     private function ensure_storage_directory(): bool {
         $dir = $this->get_storage_dir();
-
-        if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
+        if ( '' === $dir ) {
             return false;
         }
-
-        if ( ! is_writable( $dir ) ) {
-            return false;
-        }
-
-        $parent_dir = dirname( $dir );
-        $protection_files = [ $parent_dir, $dir ];
-
-        foreach ( $protection_files as $protected_dir ) {
-            $index_file = trailingslashit( $protected_dir ) . 'index.php';
-            if ( ! file_exists( $index_file ) ) {
-                file_put_contents( $index_file, "<?php\n// Silence is golden.\n" );
-            }
-
-            $htaccess_file = trailingslashit( $protected_dir ) . '.htaccess';
-            if ( ! file_exists( $htaccess_file ) ) {
-                file_put_contents(
-                    $htaccess_file,
-                    "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n"
-                );
-            }
-        }
-
+        $this->migrate_legacy_files( $dir );
         return true;
+    }
+
+    /** Move existing snapshot JSON out of public uploads on first use. */
+    private function migrate_legacy_files( string $private_dir ): void {
+        static $migrated = [];
+        if ( isset( $migrated[ $private_dir ] ) ) {
+            return;
+        }
+        $uploads = wp_upload_dir( null, false );
+        if ( empty( $uploads['basedir'] ) ) {
+            return;
+        }
+        $old_dir = trailingslashit( $uploads['basedir'] ) . self::SNAPSHOT_DIR;
+        if ( ! is_dir( $old_dir ) || is_link( $old_dir ) ) {
+            $migrated[ $private_dir ] = true;
+            return;
+        }
+        // Preserve legacy Apache protections until every file has been migrated.
+        $files = glob( trailingslashit( $old_dir ) . '*.json' );
+        foreach ( is_array( $files ) ? $files : [] as $file ) {
+            $id = basename( $file, '.json' );
+            if ( is_link( $file ) || ! is_file( $file ) || ! $this->is_valid_snapshot_id( $id ) ) {
+                continue;
+            }
+            $target = trailingslashit( $private_dir ) . basename( $file );
+            if ( is_file( $target ) && ! is_link( $target ) ) {
+                // The private copy is authoritative; never leave its public duplicate behind.
+                @unlink( $file );
+                continue;
+            }
+            if ( @rename( $file, $target ) ) {
+                @chmod( $target, 0600 );
+            } elseif ( @copy( $file, $target ) ) {
+                @chmod( $target, 0600 );
+                @unlink( $file );
+            }
+        }
+        $migrated[ $private_dir ] = true;
     }
 
     /**
@@ -395,7 +402,9 @@ class SnapshotManager {
         }
 
         $files = glob( trailingslashit( $this->get_storage_dir() ) . '*.json' );
-        return is_array( $files ) ? $files : [];
+        return is_array( $files ) ? array_values( array_filter( $files, static function( $file ) {
+            return is_file( $file ) && ! is_link( $file );
+        } ) ) : [];
     }
 
     /**
@@ -405,7 +414,8 @@ class SnapshotManager {
      * @return string Snapshot file path.
      */
     private function get_snapshot_file_path( string $snapshot_id ): string {
-        return trailingslashit( $this->get_storage_dir() ) . sanitize_file_name( $snapshot_id ) . '.json';
+        $dir = $this->get_storage_dir();
+        return '' !== $dir ? trailingslashit( $dir ) . sanitize_file_name( $snapshot_id ) . '.json' : '';
     }
 
     /**
@@ -426,9 +436,16 @@ class SnapshotManager {
         }
 
         $file = $this->get_snapshot_file_path( $snapshot_id );
-        $tmp_file = $file . '.tmp';
-
-        if ( false === file_put_contents( $tmp_file, $json . "\n", LOCK_EX ) ) {
+        if ( '' === $file || is_link( $file ) ) {
+            return false;
+        }
+        $tmp_file = @tempnam( dirname( $file ), '.rbdusb-' );
+        if ( false === $tmp_file ) {
+            return false;
+        }
+        @chmod( $tmp_file, 0600 );
+        if ( strlen( $json ) + 1 !== @file_put_contents( $tmp_file, $json . "\n", LOCK_EX ) ) {
+            @unlink( $tmp_file );
             return false;
         }
 
@@ -447,7 +464,7 @@ class SnapshotManager {
      * @return array|null Snapshot data.
      */
     private function read_snapshot_file( string $file ) {
-        if ( ! is_readable( $file ) ) {
+        if ( '' === $file || is_link( $file ) || ! is_readable( $file ) ) {
             return null;
         }
 
@@ -482,6 +499,7 @@ class SnapshotManager {
             return;
         }
 
+        $all_saved = true;
         foreach ( $legacy_snapshots as $snapshot_id => $snapshot ) {
             if ( ! is_array( $snapshot ) ) {
                 continue;
@@ -496,12 +514,16 @@ class SnapshotManager {
             $file = $this->get_snapshot_file_path( $snapshot_id );
 
             if ( ! is_file( $file ) ) {
-                $this->write_snapshot_file( $snapshot_id, $snapshot );
+                if ( ! $this->write_snapshot_file( $snapshot_id, $snapshot ) ) {
+                    $all_saved = false;
+                }
             }
         }
 
-        delete_option( self::LEGACY_SNAPSHOTS_OPTION );
-        $this->cleanup_old_snapshots();
+        if ( $all_saved ) {
+            delete_option( self::LEGACY_SNAPSHOTS_OPTION );
+            $this->cleanup_old_snapshots();
+        }
     }
 
     /**

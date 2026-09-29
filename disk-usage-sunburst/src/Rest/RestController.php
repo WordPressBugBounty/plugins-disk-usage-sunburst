@@ -8,6 +8,7 @@
 namespace RaidBoxes\DiskUsageSunburst\Rest;
 
 use RaidBoxes\DiskUsageSunburst\Scanner\FileScanner;
+use RaidBoxes\DiskUsageSunburst\Scanner\ScanJobManager;
 
 /**
  * Handles REST API endpoints for the plugin
@@ -71,7 +72,7 @@ class RestController {
                     'maximum' => 100,
                 ],
                 'max_files' => [
-                    'description' => __( 'Maximum files to scan', 'disk-usage-sunburst' ),
+                    'description' => __( 'Deprecated: the total file cutoff is ignored to keep scan results accurate.', 'disk-usage-sunburst' ),
                     'type' => 'integer',
                     'default' => 10000,
                     'minimum' => 100,
@@ -99,6 +100,16 @@ class RestController {
                 ],
             ],
         ] );
+
+        // Resumable REST scan API (one short filesystem step per request).
+        foreach ( [ '/scan/step' => 'handle_scan_step', '/scan/status' => 'handle_scan_status', '/scan/cancel' => 'handle_scan_cancel' ] as $route => $callback ) {
+            register_rest_route( self::NAMESPACE, $route, [
+                'methods' => '/scan/status' === $route ? 'GET' : 'POST',
+                'callback' => [ $this, $callback ],
+                'permission_callback' => [ $this, 'check_permissions' ],
+                'args' => [ 'job_id' => [ 'type' => 'string', 'required' => true, 'sanitize_callback' => 'sanitize_key' ] ],
+            ] );
+        }
 
         // DELETE /wp-json/disk-usage/v1/cache
         register_rest_route( self::NAMESPACE, '/cache', [
@@ -183,45 +194,39 @@ class RestController {
      * @return \WP_REST_Response|WP_Error Response object or error.
      */
     public function handle_scan_request( \WP_REST_Request $request ) {
-        $path = $request->get_param( 'path' );
-        $use_cache = $request->get_param( 'use_cache' );
-        
-        // Update scanner configuration if provided
-        if ( 'POST' === $request->get_method() ) {
-            $options = $request->get_param( 'options' );
-            if ( is_array( $options ) && ! empty( $options ) ) {
-                $this->scanner->update_config( $this->sanitize_config( $options ) );
-            }
-        } else {
-            // For GET requests, use query parameters for configuration
-            $config = [];
-            if ( $request->has_param( 'max_depth' ) ) {
-                $config['max_depth'] = $request->get_param( 'max_depth' );
-            }
-            if ( $request->has_param( 'max_files' ) ) {
-                $config['max_files'] = $request->get_param( 'max_files' );
-            }
-            if ( ! empty( $config ) ) {
-                $this->scanner->update_config( $this->sanitize_config( $config ) );
-            }
+        $path = (string) ( $request->get_param( 'path' ) ?: ABSPATH );
+        $use_cache = filter_var( $request->get_param( 'use_cache' ) ?? true, FILTER_VALIDATE_BOOLEAN );
+        $options = 'POST' === $request->get_method() ? (array) $request->get_param( 'options' ) : [];
+        if ( $request->has_param( 'max_depth' ) ) {
+            $options['max_depth'] = $request->get_param( 'max_depth' );
         }
-
-        // Perform the scan
-        $result = $this->scanner->scan( $path, $use_cache );
-
+        // max_files previously limited the *entire* synchronous scan, silently
+        // returning partial sizes. It is intentionally no longer used as a total limit.
+        $job = new ScanJobManager( $options );
+        $result = $job->start_job( $path, $use_cache );
         if ( is_wp_error( $result ) ) {
-            return new \WP_Error(
-                'scan_failed',
-                $result->get_error_message(),
-                [ 'status' => 500 ]
-            );
+            return $result;
         }
+        return new \WP_REST_Response( array_merge( [ 'success' => true ], $result ), 200 );
+    }
 
-        return new \WP_REST_Response( [
-            'success' => true,
-            'data' => $result,
-            'stats' => $this->scanner->get_stats(),
-        ], 200 );
+    /** Run a single bounded step via POST /scan/step?job_id=... */
+    public function handle_scan_step( \WP_REST_Request $request ) {
+        $job = new ScanJobManager();
+        $result = $job->run_step( (string) $request->get_param( 'job_id' ) );
+        return is_wp_error( $result ) ? $result : new \WP_REST_Response( array_merge( [ 'success' => true ], $result ), 200 );
+    }
+
+    public function handle_scan_status( \WP_REST_Request $request ) {
+        $job = new ScanJobManager();
+        $result = $job->get_status( (string) $request->get_param( 'job_id' ) );
+        return is_wp_error( $result ) ? $result : new \WP_REST_Response( array_merge( [ 'success' => true ], $result ), 200 );
+    }
+
+    public function handle_scan_cancel( \WP_REST_Request $request ) {
+        $job = new ScanJobManager();
+        $result = $job->cancel_job( (string) $request->get_param( 'job_id' ) );
+        return new \WP_REST_Response( [ 'success' => $result ], $result ? 200 : 404 );
     }
 
     /**

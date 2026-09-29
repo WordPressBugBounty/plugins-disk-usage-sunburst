@@ -156,9 +156,16 @@
                     this.currentSnapshotId = response.data.snapshot_id || null;
                     this.renderChart();
                     this.showStats(response.data.metadata);
+                    if (response.data.metadata && response.data.metadata.snapshot_warning) {
+                        this.showError(response.data.metadata.snapshot_warning);
+                    }
                     this.showExportOptions();
                     this.showViewToggle();
-                    this.showSuccess(rbdusbAjax.strings.complete);
+                    if (response.data.metadata && response.data.metadata.complete === false) {
+                        this.showError('Scan completed with skipped or unreadable entries. The displayed disk usage may be incomplete; see scan metadata.');
+                    } else {
+                        this.showSuccess(rbdusbAjax.strings.complete);
+                    }
                     
                     // Start background analysis for better performance
                     this.preloadAnalysis();

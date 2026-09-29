@@ -30,12 +30,9 @@ class FileScanner {
     private const DEFAULT_EXCLUDES = [
         '.git',
         '.svn',
+        '.hg',
         '.DS_Store',
         'Thumbs.db',
-        'node_modules',
-        '.sass-cache',
-        'cache',
-        'logs',
     ];
 
     /**
@@ -300,15 +297,10 @@ class FileScanner {
             
             foreach ( $sensitive_paths as $sensitive_path ) {
                 $sensitive_real = realpath( $sensitive_path );
-                if ( $sensitive_real && strpos( $real_path, $sensitive_real ) === 0 ) {
+                if ( $sensitive_real && ( $real_path === $sensitive_real || 0 === strpos( $real_path, rtrim( $sensitive_real, DIRECTORY_SEPARATOR ) . DIRECTORY_SEPARATOR ) ) ) {
                     return false;
                 }
             }
-        }
-        
-        // Additional check: prevent access to parent directories using ../ 
-        if ( strpos( $path, '..' ) !== false ) {
-            return false;
         }
         
         return true;
@@ -416,7 +408,7 @@ class FileScanner {
      * @return string Cache key.
      */
     private function get_cache_key( string $path ): string {
-        return 'rbdusb_scan_' . md5( $path . serialize( $this->config ) );
+        return 'rbdusb_scan_' . md5( $path . serialize( $this->config ) . '|' . get_option( 'rbdusb_cache_generation', '0' ) );
     }
 
     /**
@@ -426,35 +418,9 @@ class FileScanner {
      * @return bool Success status.
      */
     public function clear_cache( string $path = '' ): bool {
-        if ( empty( $path ) ) {
-            // Clear all scan caches - use prepared statements to prevent SQL injection
-            global $wpdb;
-            
-            // Use prepared statements with wildcards for security
-            $wpdb->query( $wpdb->prepare( 
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                '_transient_rbdusb_scan_%'
-            ));
-            
-            $wpdb->query( $wpdb->prepare( 
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                '_transient_timeout_rbdusb_scan_%'
-            ));
-
-            $wpdb->query( $wpdb->prepare( 
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                '_transient_rbdusb_chunked_scan_%'
-            ));
-
-            $wpdb->query( $wpdb->prepare( 
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                '_transient_timeout_rbdusb_chunked_scan_%'
-            ));
-            
-            return true;
-        }
-
-        return delete_transient( $this->get_cache_key( $path ) );
+        // Generation invalidation also works with Redis/Memcached object caches.
+        // Existing transients expire normally; no direct SQL deletion required.
+        return update_option( 'rbdusb_cache_generation', wp_generate_uuid4(), false );
     }
 
     /**

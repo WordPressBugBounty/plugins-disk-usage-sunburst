@@ -51,56 +51,38 @@ All endpoints require proper WordPress authentication and the `update_core` capa
 
 ### Available Endpoints
 
-#### `GET /wp-json/disk-usage/v1/scan`
+#### `GET` or `POST /wp-json/disk-usage/v1/scan`
 
-Scan a directory and return disk usage data.
+Start an asynchronous scan. Authentication requires `manage_options` (single site) or
+`manage_network` (multisite). Results are returned directly if a complete cache exists;
+otherwise the response includes a `job_id`, `completed: false`, and `progress`.
+The old synchronous REST scan is intentionally removed to prevent PHP request timeouts.
+The legacy `max_files` total-file cutoff is ignored: scans should not silently
+report a partially measured size as a complete result. For POST use `options` to
+specify supported chunk settings such as `files_per_step` and `max_depth`.
 
-**Parameters:**
-- `path` (string): Path to scan (default: WordPress root)
-- `use_cache` (boolean): Use cached results (default: true)
-- `max_depth` (integer): Maximum scan depth (default: 50)
-- `max_files` (integer): Maximum files to scan (default: 10000)
+Then POST `/wp-json/disk-usage/v1/scan/step` with `job_id` until `completed: true`;
+check with GET `/scan/status?job_id=...`, or POST `/scan/cancel`.
+All endpoints use the same WordPress REST authentication/capabilities.
 
-**Example Request:**
-```bash
-curl -X GET "https://yoursite.com/wp-json/disk-usage/v1/scan?path=/wp-content/uploads&max_files=5000" \
-  -H "Authorization: Bearer YOUR_TOKEN"
+### Private storage
+
+Scan jobs and snapshots are stored in a site-specific private directory **outside**
+the WordPress and HTTP document roots. By default the plugin attempts to create
+`.rbdusb-private-<site-hash>` next to the document root. It deliberately refuses
+web-accessible storage instead of relying on `.htaccess` (which Nginx ignores).
+When your host does not allow writing there, define an existing/writable directory
+outside every document root in `wp-config.php`:
+
+```php
+define( 'RBDUSB_PRIVATE_DIR', '/path/outside/webroot/rbdusb-private' );
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "name": "uploads",
-    "size": 1048576,
-    "type": "directory",
-    "children": [...],
-    "metadata": {
-      "scan_time": 2.34,
-      "files_count": 1234,
-      "directories_count": 56,
-      "total_size": 1048576
-    }
-  }
-}
-```
-
-#### `POST /wp-json/disk-usage/v1/scan`
-
-Perform a scan with advanced options.
-
-**Body:**
-```json
-{
-  "path": "/path/to/scan",
-  "options": {
-    "max_depth": 30,
-    "max_files": 5000,
-    "memory_limit": "512M"
-  }
-}
-```
+Ensure PHP has filesystem permissions and include this directory in backups if you
+want to preserve saved snapshots. Existing snapshots in `wp-content/uploads/disk-usage-sunburst/snapshots`
+are moved on first access. Old scan jobs in `wp-content/uploads/disk-usage-sunburst/jobs` are purged on the next scan start, after private storage is validated (do not upgrade mid-scan).
+Legacy files left behind by filesystem permission errors should be removed by an
+administrator after verifying that the snapshots were migrated.
 
 #### `DELETE /wp-json/disk-usage/v1/cache`
 

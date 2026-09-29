@@ -7,6 +7,8 @@
 
 namespace RaidBoxes\DiskUsageSunburst\Scanner;
 
+use RaidBoxes\DiskUsageSunburst\Storage\PrivateStorage;
+
 /**
  * Runs disk scans in small resumable jobs so large installations do not need to
  * finish within one PHP request.
@@ -67,11 +69,16 @@ class ScanJobManager {
             return new \WP_Error( 'invalid_path', __( 'Invalid or inaccessible path provided.', 'disk-usage-sunburst' ) );
         }
 
+        // Storage must be private even when a previous cached scan exists.
+        if ( '' === $this->get_jobs_base_dir() ) {
+            return new \WP_Error( 'private_storage_unavailable', __( 'Private scan storage is unavailable. Configure RBDUSB_PRIVATE_DIR outside the webroot.', 'disk-usage-sunburst' ) );
+        }
         $this->cleanup_old_jobs();
+        $this->cleanup_legacy_jobs(); // Remove old public upload data after a successful private-storage check.
 
         if ( $use_cache ) {
-            $cached = get_transient( $this->get_cache_key( $path ) );
-            if ( is_array( $cached ) && ! empty( $cached['metadata']['complete'] ) ) {
+            $cached = $this->get_cached_result( $path );
+            if ( is_array( $cached ) ) {
                 return [
                     'completed' => true,
                     'cached'    => true,
@@ -134,7 +141,9 @@ class ScanJobManager {
             'cache_key'           => $this->get_cache_key( $real_path ),
         ];
 
-        $this->save_state( $job_id, $state );
+        if ( ! $this->save_state( $job_id, $state ) ) {
+            return new \WP_Error( 'job_write_failed', __( 'Could not persist the scan job.', 'disk-usage-sunburst' ) );
+        }
 
         return [
             'completed' => false,
@@ -144,6 +153,15 @@ class ScanJobManager {
         ];
     }
 
+    /** Retrieve an existing complete cached result without starting a new job. */
+    public function get_cached_result( string $path ): ?array {
+        if ( ! $this->is_valid_path( $path ) ) {
+            return null;
+        }
+        $cached = get_transient( $this->get_cache_key( realpath( $path ) ) );
+        return is_array( $cached ) && ! empty( $cached['metadata']['complete'] ) ? $cached : null;
+    }
+
     /**
      * Run one small scan step.
      *
@@ -151,21 +169,37 @@ class ScanJobManager {
      * @return array|\WP_Error Step result.
      */
     public function run_step( string $job_id ) {
+        return $this->with_job_lock( $job_id, function() use ( $job_id ) {
+            return $this->run_step_locked( $job_id );
+        } );
+    }
+
+    private function run_step_locked( string $job_id ) {
         $state = $this->load_state( $job_id );
+
         if ( ! is_array( $state ) ) {
             return new \WP_Error( 'job_not_found', __( 'Scan job not found.', 'disk-usage-sunburst' ) );
         }
 
+        // Restore the configuration chosen when the job was started (including REST jobs).
+        $this->config = wp_parse_args( (array) ( $state['config'] ?? [] ), self::DEFAULT_CONFIG );
+
         if ( 'completed' === ( $state['status'] ?? '' ) ) {
             $result = $this->load_result( $job_id );
+            if ( ! is_array( $result ) ) {
+                return new \WP_Error( 'result_unavailable', __( 'Completed scan data could not be read.', 'disk-usage-sunburst' ) );
+            }
             return [
                 'completed' => true,
                 'job_id'    => $job_id,
                 'data'      => $result,
-                'progress'  => $this->get_progress_data( $state, __( 'Scan already completed.', 'disk-usage-sunburst' ) ),
+                'progress'  => $this->get_progress_data( $state, __( 'Scan already completed.', 'disk-usage-sunburst' ), 100 ),
             ];
         }
 
+        if ( 'failed' === ( $state['status'] ?? '' ) ) {
+            return new \WP_Error( 'job_failed', __( 'The scan failed. Please start a new scan.', 'disk-usage-sunburst' ) );
+        }
         if ( 'cancelled' === ( $state['status'] ?? '' ) ) {
             return new \WP_Error( 'job_cancelled', __( 'Scan job was cancelled.', 'disk-usage-sunburst' ) );
         }
@@ -196,11 +230,17 @@ class ScanJobManager {
             }
         } catch ( \Throwable $e ) {
             $state['errors'][] = $this->limit_error_message( $e->getMessage() );
+            $state['status'] = 'failed'; // Never signal success after an interrupted scan.
         }
 
         $state['step_count'] = (int) $state['step_count'] + 1;
         $state['updated_at'] = current_time( 'mysql' );
-        $this->save_state( $job_id, $state );
+        if ( ! $this->save_state( $job_id, $state ) ) {
+            return new \WP_Error( 'job_write_failed', __( 'Could not persist the scan progress.', 'disk-usage-sunburst' ) );
+        }
+        if ( 'failed' === $state['status'] ) {
+            return new \WP_Error( 'job_failed', __( 'The scan stopped after a filesystem or storage error.', 'disk-usage-sunburst' ) );
+        }
 
         return [
             'completed' => false,
@@ -216,16 +256,16 @@ class ScanJobManager {
      * @return bool Whether the job could be cancelled.
      */
     public function cancel_job( string $job_id ): bool {
-        $state = $this->load_state( $job_id );
-        if ( ! is_array( $state ) ) {
-            return false;
-        }
-
-        $state['status'] = 'cancelled';
-        $state['updated_at'] = current_time( 'mysql' );
-        $this->save_state( $job_id, $state );
-
-        return true;
+        $result = $this->with_job_lock( $job_id, function() use ( $job_id ) {
+            $state = $this->load_state( $job_id );
+            if ( ! is_array( $state ) || 'running' !== ( $state['status'] ?? '' ) ) {
+                return false;
+            }
+            $state['status'] = 'cancelled';
+            $state['updated_at'] = current_time( 'mysql' );
+            return $this->save_state( $job_id, $state );
+        } );
+        return true === $result;
     }
 
     /**
@@ -255,18 +295,20 @@ class ScanJobManager {
      * @param string $snapshot_id Snapshot ID.
      */
     public function set_snapshot_id( string $job_id, string $snapshot_id ): void {
-        $state = $this->load_state( $job_id );
-        if ( is_array( $state ) ) {
-            $state['snapshot_id'] = $snapshot_id;
-            $this->save_state( $job_id, $state );
-        }
-
-        $result = $this->load_result( $job_id );
-        if ( is_array( $result ) ) {
-            $result['snapshot_id'] = $snapshot_id;
-            $result['metadata']['snapshot_id'] = $snapshot_id;
-            $this->save_result( $job_id, $result );
-        }
+        $this->with_job_lock( $job_id, function() use ( $job_id, $snapshot_id ) {
+            $state = $this->load_state( $job_id );
+            if ( is_array( $state ) ) {
+                $state['snapshot_id'] = $snapshot_id;
+                $this->save_state( $job_id, $state );
+            }
+            $result = $this->load_result( $job_id );
+            if ( is_array( $result ) ) {
+                $result['snapshot_id'] = $snapshot_id;
+                $result['metadata']['snapshot_id'] = $snapshot_id;
+                $this->save_result( $job_id, $result );
+            }
+            return true;
+        } );
     }
 
     /**
@@ -355,77 +397,63 @@ class ScanJobManager {
 
         $node = $state['nodes'][ $node_id ];
         $path = (string) $node['path'];
-
-        if ( ! is_dir( $path ) || ! is_readable( $path ) ) {
+        if ( ! is_dir( $path ) || ! is_readable( $path ) || is_link( $path ) ) {
             $state['nodes'][ $node_id ]['error'] = __( 'Directory is not readable.', 'disk-usage-sunburst' );
-            $state['directories_scanned'] = (int) $state['directories_scanned'] + 1;
+            $state['errors'][] = $this->limit_error_message( 'Unreadable directory: ' . $path );
+            $state['directories_scanned']++;
             return;
         }
-
         if ( $this->should_exclude_path( $path ) && 0 !== (int) $node['depth'] ) {
-            $state['excluded_skipped'] = (int) $state['excluded_skipped'] + 1;
-            $state['directories_scanned'] = (int) $state['directories_scanned'] + 1;
+            $state['excluded_skipped']++;
+            $state['directories_scanned']++;
             unset( $state['nodes'][ $node_id ] );
             return;
         }
 
-        $entries = [];
-        $handle = opendir( $path );
-        if ( false === $handle ) {
+        try {
+            // DirectoryIterator does not load an entire huge directory into a PHP array.
+            $iterator = new \DirectoryIterator( $path );
+            unset( $iterator );
+        } catch ( \Throwable $e ) {
             $state['nodes'][ $node_id ]['error'] = __( 'Directory cannot be opened.', 'disk-usage-sunburst' );
-            $state['directories_scanned'] = (int) $state['directories_scanned'] + 1;
+            $state['errors'][] = $this->limit_error_message( $e->getMessage() );
+            $state['directories_scanned']++;
             return;
         }
-
-        try {
-            while ( false !== ( $entry = readdir( $handle ) ) ) {
-                if ( '.' === $entry || '..' === $entry ) {
-                    continue;
-                }
-                $entries[] = $entry;
-            }
-        } finally {
-            closedir( $handle );
-        }
-
-        $state['current_dir'] = [
-            'node_id' => $node_id,
-            'entries' => $entries,
-            'offset'  => 0,
-        ];
+        $state['current_dir'] = [ 'node_id' => $node_id, 'offset' => 0 ];
     }
 
     /**
-     * Process entries in the currently opened directory until the step budget is reached.
+     * Resume directory iteration by its offset. Memory stays bounded even for
+     * directories containing hundreds of thousands of entries.
      */
     private function process_current_directory_entries( array &$state, float $step_started, int $files_before, int $dirs_before ): void {
         if ( empty( $state['current_dir'] ) ) {
             return;
         }
-
-        $current = &$state['current_dir'];
-        $node_id = (string) $current['node_id'];
-        $entries = $current['entries'];
-        $offset = (int) $current['offset'];
-        $total_entries = count( $entries );
-
+        $node_id = (string) $state['current_dir']['node_id'];
         if ( empty( $state['nodes'][ $node_id ] ) ) {
             $state['current_dir'] = null;
             return;
         }
+        $offset = (int) $state['current_dir']['offset'];
+        $iterator = new \DirectoryIterator( (string) $state['nodes'][ $node_id ]['path'] );
+        $iterator->seek( $offset );
 
-        while ( $offset < $total_entries ) {
+        while ( $iterator->valid() ) {
             if ( $this->is_step_budget_exhausted( $step_started, $files_before, $dirs_before, $state ) ) {
-                $current['offset'] = $offset;
+                $state['current_dir']['offset'] = $offset;
                 return;
             }
-
-            $entry = (string) $entries[ $offset ];
-            $offset++;
+            $entry = $iterator->getFilename();
+            $iterator->next();
+            ++$offset;
+            if ( '.' === $entry || '..' === $entry ) {
+                continue;
+            }
             $this->process_entry( $state, $node_id, $entry );
         }
-
-        $state['directories_scanned'] = (int) $state['directories_scanned'] + 1;
+        ++$state['directories_scanned'];
         $state['current_dir'] = null;
     }
 
@@ -479,6 +507,10 @@ class ScanJobManager {
 
         if ( is_file( $path ) ) {
             $size = $this->get_safe_filesize( $path );
+            if ( null === $size ) {
+                $state['errors'][] = $this->limit_error_message( 'Could not read file size: ' . $path );
+                return;
+            }
             $relative_path = $this->relative_path( $path, (string) $state['base_path'] );
             $extension = strtolower( pathinfo( $path, PATHINFO_EXTENSION ) );
 
@@ -513,10 +545,11 @@ class ScanJobManager {
         $state['completed_at'] = current_time( 'mysql' );
         $state['updated_at'] = $state['completed_at'];
 
-        $this->save_result( $job_id, $result );
-        $this->save_state( $job_id, $state );
+        if ( ! $this->save_result( $job_id, $result ) || ! $this->save_state( $job_id, $state ) ) {
+            throw new \RuntimeException( 'Failed to persist completed scan.' );
+        }
 
-        if ( ! empty( $state['cache_key'] ) ) {
+        if ( ! empty( $state['cache_key'] ) && ! empty( $result['metadata']['complete'] ) ) {
             set_transient( (string) $state['cache_key'], $result, (int) $this->config['cache_duration'] );
         }
 
@@ -558,7 +591,7 @@ class ScanJobManager {
         $analysis = $this->build_analysis( $state, $total_size );
 
         $root['metadata'] = [
-            'complete'              => true,
+            'complete'              => empty( $state['errors'] ) && empty( $state['warnings'] ) && 0 === (int) $state['invalid_skipped'],
             'scanner'               => 'chunked',
             'scan_time'             => max( 0, microtime( true ) - (float) $state['started_at_micro'] ),
             'files_count'           => (int) $state['files_scanned'],
@@ -1045,8 +1078,7 @@ class ScanJobManager {
 
         $current_entries = 0;
         $current_offset = 0;
-        if ( ! empty( $state['current_dir']['entries'] ) ) {
-            $current_entries = count( (array) $state['current_dir']['entries'] );
+        if ( ! empty( $state['current_dir'] ) ) {
             $current_offset = (int) $state['current_dir']['offset'];
         }
 
@@ -1072,10 +1104,6 @@ class ScanJobManager {
      * Validate a path.
      */
     private function is_valid_path( string $path ): bool {
-        if ( false !== strpos( $path, '..' ) ) {
-            return false;
-        }
-
         if ( ! file_exists( $path ) || ! is_readable( $path ) ) {
             return false;
         }
@@ -1098,7 +1126,8 @@ class ScanJobManager {
      */
     private function should_exclude_path( string $path ): bool {
         $basename = basename( $path );
-        $excludes = apply_filters( 'rbdusb_chunked_exclude_paths', self::DEFAULT_EXCLUDES, $path );
+        $excludes = apply_filters( 'rbdusb_exclude_paths', self::DEFAULT_EXCLUDES, $path );
+        $excludes = apply_filters( 'rbdusb_chunked_exclude_paths', $excludes, $path );
 
         return in_array( $basename, $excludes, true );
     }
@@ -1120,9 +1149,10 @@ class ScanJobManager {
     /**
      * Get file size safely.
      */
-    private function get_safe_filesize( string $path ): int {
+    private function get_safe_filesize( string $path ): ?int {
+        clearstatcache( true, $path );
         $size = @filesize( $path );
-        return false !== $size ? (int) $size : 0;
+        return false !== $size ? (int) $size : null;
     }
 
     /**
@@ -1143,7 +1173,7 @@ class ScanJobManager {
      * Get cache key.
      */
     private function get_cache_key( string $path ): string {
-        return 'rbdusb_chunked_scan_' . md5( $path . '|' . ( defined( 'RBDUSB_VERSION' ) ? RBDUSB_VERSION : '0' ) . '|' . wp_json_encode( $this->config ) );
+        return 'rbdusb_chunked_scan_' . md5( $path . '|' . ( defined( 'RBDUSB_VERSION' ) ? RBDUSB_VERSION : '0' ) . '|' . wp_json_encode( $this->config ) . '|' . get_option( 'rbdusb_cache_generation', '0' ) );
     }
 
     /**
@@ -1154,59 +1184,64 @@ class ScanJobManager {
             return sanitize_key( wp_generate_uuid4() );
         }
 
-        return sanitize_key( uniqid( 'rbdusb_', true ) );
+        return bin2hex( random_bytes( 16 ) );
     }
 
     /**
      * Get jobs base dir.
      */
     private function get_jobs_base_dir(): string {
-        $upload_dir = wp_upload_dir();
-        $base_dir = ! empty( $upload_dir['basedir'] ) ? $upload_dir['basedir'] : WP_CONTENT_DIR . '/uploads';
-
-        return trailingslashit( $base_dir ) . 'disk-usage-sunburst/jobs';
+        return PrivateStorage::directory( 'jobs' );
     }
 
     /**
      * Get job dir.
      */
     private function get_job_dir( string $job_id ): string {
-        return trailingslashit( $this->get_jobs_base_dir() ) . sanitize_key( $job_id );
+        if ( ! preg_match( '/^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/', $job_id ) ) {
+            return '';
+        }
+        $base = $this->get_jobs_base_dir();
+        return '' !== $base ? trailingslashit( $base ) . $job_id : '';
     }
 
     /**
      * Load state.
      */
     private function load_state( string $job_id ): ?array {
-        return $this->read_json_file( $this->get_job_dir( $job_id ) . '/state.json' );
+        $dir = $this->get_job_dir( $job_id );
+        return '' !== $dir && is_dir( $dir ) && ! is_link( $dir ) ? $this->read_json_file( $dir . '/state.json' ) : null;
     }
 
     /**
      * Save state.
      */
-    private function save_state( string $job_id, array $state ): void {
-        $this->write_json_file( $this->get_job_dir( $job_id ) . '/state.json', $state );
+    private function save_state( string $job_id, array $state ): bool {
+        $dir = $this->get_job_dir( $job_id );
+        return '' !== $dir && is_dir( $dir ) && ! is_link( $dir ) && $this->write_json_file( $dir . '/state.json', $state );
     }
 
     /**
      * Load result.
      */
     private function load_result( string $job_id ): ?array {
-        return $this->read_json_file( $this->get_job_dir( $job_id ) . '/result.json' );
+        $dir = $this->get_job_dir( $job_id );
+        return '' !== $dir && is_dir( $dir ) && ! is_link( $dir ) ? $this->read_json_file( $dir . '/result.json' ) : null;
     }
 
     /**
      * Save result.
      */
-    private function save_result( string $job_id, array $result ): void {
-        $this->write_json_file( $this->get_job_dir( $job_id ) . '/result.json', $result );
+    private function save_result( string $job_id, array $result ): bool {
+        $dir = $this->get_job_dir( $job_id );
+        return '' !== $dir && is_dir( $dir ) && ! is_link( $dir ) && $this->write_json_file( $dir . '/result.json', $result );
     }
 
     /**
      * Read JSON file.
      */
     private function read_json_file( string $file ): ?array {
-        if ( ! is_readable( $file ) ) {
+        if ( is_link( $file ) || ! is_readable( $file ) ) {
             return null;
         }
 
@@ -1223,15 +1258,51 @@ class ScanJobManager {
     /**
      * Write JSON file atomically.
      */
-    private function write_json_file( string $file, array $data ): void {
+    private function write_json_file( string $file, array $data ): bool {
         $dir = dirname( $file );
-        if ( ! is_dir( $dir ) ) {
-            wp_mkdir_p( $dir );
+        if ( '' === $file || ! is_dir( $dir ) || is_link( $dir ) || is_link( $file ) ) {
+            return false;
         }
+        $json = wp_json_encode( $data );
+        if ( false === $json ) {
+            return false;
+        }
+        $tmp = @tempnam( $dir, '.rbdusb-' );
+        if ( false === $tmp ) {
+            return false;
+        }
+        @chmod( $tmp, 0600 );
+        $written = @file_put_contents( $tmp, $json, LOCK_EX );
+        if ( strlen( $json ) !== $written || ! @rename( $tmp, $file ) ) {
+            @unlink( $tmp );
+            return false;
+        }
+        return true;
+    }
 
-        $tmp = $file . '.tmp';
-        file_put_contents( $tmp, wp_json_encode( $data ) );
-        rename( $tmp, $file );
+    /** Serialize all state changes for a single job across concurrent PHP requests. */
+    private function with_job_lock( string $job_id, callable $callback ) {
+        $dir = $this->get_job_dir( $job_id );
+        if ( '' === $dir || is_link( $dir ) || ! is_dir( $dir ) ) {
+            return new \WP_Error( 'job_not_found', __( 'Scan job not found.', 'disk-usage-sunburst' ) );
+        }
+        $lock_file = $dir . '/scan.lock';
+        if ( is_link( $lock_file ) ) {
+            return new \WP_Error( 'unsafe_job', __( 'Unsafe scan job storage.', 'disk-usage-sunburst' ) );
+        }
+        $handle = @fopen( $lock_file, 'c' );
+        if ( false === $handle ) {
+            return new \WP_Error( 'job_lock_failed', __( 'Could not lock the scan job.', 'disk-usage-sunburst' ) );
+        }
+        try {
+            if ( ! flock( $handle, LOCK_EX ) ) {
+                return new \WP_Error( 'job_lock_failed', __( 'Could not lock the scan job.', 'disk-usage-sunburst' ) );
+            }
+            return $callback();
+        } finally {
+            flock( $handle, LOCK_UN );
+            fclose( $handle );
+        }
     }
 
     /**
@@ -1241,33 +1312,56 @@ class ScanJobManager {
         return substr( sanitize_text_field( $message ), 0, 300 );
     }
 
+    /** Purge obsolete scan jobs written into public uploads by previous versions. */
+    private function cleanup_legacy_jobs(): void {
+        $uploads = wp_upload_dir( null, false );
+        if ( empty( $uploads['basedir'] ) ) {
+            return;
+        }
+        $base = trailingslashit( $uploads['basedir'] ) . 'disk-usage-sunburst/jobs';
+        if ( is_link( $base ) || ! is_dir( $base ) ) {
+            return;
+        }
+        $entries = @scandir( $base );
+        foreach ( is_array( $entries ) ? $entries : [] as $entry ) {
+            if ( '.' === $entry || '..' === $entry ) {
+                continue;
+            }
+            $dir = trailingslashit( $base ) . $entry;
+            if ( is_link( $dir ) ) {
+                @unlink( $dir ); // Do not follow legacy job directory symlinks.
+            } elseif ( preg_match( '/^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/', $entry ) && is_dir( $dir ) ) {
+                $this->delete_directory( $dir, (string) realpath( $base ) );
+            }
+        }
+        @rmdir( $base );
+    }
+
     /**
      * Cleanup old job directories.
      */
     private function cleanup_old_jobs(): void {
         $base = $this->get_jobs_base_dir();
-        if ( ! is_dir( $base ) ) {
+        if ( '' === $base || ! is_dir( $base ) || is_link( $base ) ) {
             return;
         }
-
-        $max_age = DAY_IN_SECONDS;
-        $now = time();
-        $handle = opendir( $base );
+        $handle = @opendir( $base );
         if ( false === $handle ) {
             return;
         }
-
         try {
             while ( false !== ( $entry = readdir( $handle ) ) ) {
-                if ( '.' === $entry || '..' === $entry ) {
+                // Never follow unknown entries or symlinks, even at the top level.
+                if ( ! preg_match( '/^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/', $entry ) ) {
                     continue;
                 }
                 $dir = trailingslashit( $base ) . $entry;
-                if ( ! is_dir( $dir ) ) {
+                if ( is_link( $dir ) || ! is_dir( $dir ) ) {
                     continue;
                 }
-                if ( $now - (int) filemtime( $dir ) > $max_age ) {
-                    $this->delete_directory( $dir );
+                $mtime = @filemtime( $dir );
+                if ( false !== $mtime && time() - $mtime > DAY_IN_SECONDS ) {
+                    $this->delete_directory( $dir, $base );
                 }
             }
         } finally {
@@ -1275,31 +1369,29 @@ class ScanJobManager {
         }
     }
 
-    /**
-     * Delete directory recursively.
-     */
-    private function delete_directory( string $dir ): void {
-        if ( ! is_dir( $dir ) ) {
+    /** Only recurse into real directories inside the private jobs directory. */
+    private function delete_directory( string $dir, string $base ): void {
+        if ( is_link( $dir ) || ! is_dir( $dir ) ||
+            0 !== strpos( (string) realpath( $dir ), rtrim( $base, '/\\' ) . DIRECTORY_SEPARATOR ) ) {
             return;
         }
-
-        $items = scandir( $dir );
+        $items = @scandir( $dir );
         if ( false === $items ) {
             return;
         }
-
         foreach ( $items as $item ) {
             if ( '.' === $item || '..' === $item ) {
                 continue;
             }
             $path = $dir . DIRECTORY_SEPARATOR . $item;
-            if ( is_dir( $path ) && ! is_link( $path ) ) {
-                $this->delete_directory( $path );
+            if ( is_link( $path ) ) {
+                @unlink( $path ); // Delete link itself, never its target.
+            } elseif ( is_dir( $path ) ) {
+                $this->delete_directory( $path, $base );
             } else {
                 @unlink( $path );
             }
         }
-
         @rmdir( $dir );
     }
 }

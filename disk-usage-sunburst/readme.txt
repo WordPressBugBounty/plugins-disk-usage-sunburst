@@ -5,8 +5,8 @@ Tags: disk usage, disk space, big files, disk consumption, file consumption, fil
 Requires at least: 5.0
 Tested up to: 7.0.3
 Requires PHP: 7.4
-Version: 2.0.6
-Stable tag: 2.0.6
+Version: 2.0.7
+Stable tag: 2.0.7
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 Network: true
@@ -41,7 +41,7 @@ Modern disk usage visualization plugin with enhanced performance, security, and 
 = 🔧 Technical Requirements =
 
 * WordPress 5.0 or higher
-* PHP 7.4 or higher
+* PHP 7.4 or higher (PHP 8.3+ recommended; PHP 7.4 is end-of-life)
 * Modern browser with SVG support
 
 = 🎨 How to Use =
@@ -89,6 +89,17 @@ In this case unfortunately this plugin can't calculate the sizes of all your Wor
 1. Plugin in action
 
 == Changelog ==
+
+
+= 2.0.7 =
+* **Security:** Replaced file-based scan and snapshot storage with a dedicated WordPress database table.
+* **Security:** Hardened legacy file cleanup against symlink traversal and improved filesystem path validation.
+* **Performance:** Optimized chunked scanning to reduce memory consumption when processing large directories.
+* **Performance:** Converted synchronous REST scanning to incremental processing.
+* **Reliability:** Added database-backed job locking, improved write validation, cache handling, and detection of incomplete scans.
+* **Storage:** Added automatic migration of existing snapshots from legacy file storage.
+* **Compatibility:** Improved portability across different hosting environments. Minimum PHP requirement remains PHP 7.4.
+This update introduces database-based storage for scan results and snapshots. Existing snapshots are migrated automatically. Any scans in progress must be restarted after updating. We recommend creating a backup before upgrading.
 
 * 2.0.6: Fix missing ScanJobManager class and cleanup legacy files.
 

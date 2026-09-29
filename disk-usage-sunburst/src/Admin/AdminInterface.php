@@ -280,13 +280,15 @@ class AdminInterface {
             $save_snapshot = filter_var( $_POST['save_snapshot'] ?? true, FILTER_VALIDATE_BOOLEAN );
             $snapshot_id = $this->scan_job_manager->get_snapshot_id( $job_id );
 
-            if ( $save_snapshot && empty( $snapshot_id ) ) {
+            if ( $save_snapshot && empty( $snapshot_id ) && ! empty( $result['data']['metadata']['complete'] ) ) {
                 $snapshot_result = $this->snapshot_manager->save_snapshot( $result['data'] );
                 if ( ! is_wp_error( $snapshot_result ) ) {
                     $snapshot_id = (string) $snapshot_result;
                     $this->scan_job_manager->set_snapshot_id( $job_id, $snapshot_id );
                     $result['data']['snapshot_id'] = $snapshot_id;
                     $result['data']['metadata']['snapshot_id'] = $snapshot_id;
+                } else {
+                    $result['data']['metadata']['snapshot_warning'] = $snapshot_result->get_error_message();
                 }
             } elseif ( ! empty( $snapshot_id ) ) {
                 $result['data']['snapshot_id'] = $snapshot_id;
@@ -669,16 +671,11 @@ class AdminInterface {
             
             $scan_data = $snapshot['data'];
         } else {
-            // No snapshot ID provided, perform fresh scan for analysis
-            $path = ABSPATH;
-            $use_cache = true; // Use cache for better performance
-            
-            $result = $this->scanner->scan( $path, $use_cache );
-            
-            if ( is_wp_error( $result ) ) {
-                wp_send_json_error( [ 'message' => __( 'Failed to get scan data: ', 'disk-usage-sunburst' ) . $result->get_error_message() ] );
+            // Never start a synchronous scan just to build analysis.
+            $result = $this->scan_job_manager->get_cached_result( ABSPATH );
+            if ( ! is_array( $result ) ) {
+                wp_send_json_error( [ 'message' => __( 'Please finish a complete chunked scan first.', 'disk-usage-sunburst' ) ] );
             }
-            
             $scan_data = $result;
         }
 
